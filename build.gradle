@@ -11,13 +11,13 @@ subprojects {
 }
 
 ext {
-  androidPlugin = 'com.android.tools.build:gradle:1.2.3'
-  compileSdkVersion = 22
-  buildToolsVersion = '22.0.1'
+  androidPlugin = 'com.android.tools.build:gradle:1.3.0'
+  compileSdkVersion = 23
+  buildToolsVersion = '23.0.0'
 
   // Android dependencies.
-  supportV4 = 'com.android.support:support-v4:22.1.0'
-  supportAnnotations = 'com.android.support:support-annotations:22.1.0'
+  supportV4 = 'com.android.support:support-v4:23.0.0'
+  supportAnnotations = 'com.android.support:support-annotations:23.0.0'
   supportTestRunner = 'com.android.support.test:runner:0.3'
 
   // Square dependencies.
@@ -29,9 +29,10 @@ ext {
   timber = 'com.jakewharton.timber:timber:2.7.1'
   autoParcel = 'com.github.frankiesardo:auto-parcel:0.3'
   autoParcelProcessor = 'com.github.frankiesardo:auto-parcel-processor:0.3'
-  rxJava = 'io.reactivex:rxjava:1.0.6'
-  rxAndroid = 'io.reactivex:rxandroid:0.24.0'
-  truth = 'com.google.truth:truth:0.25'
+  rxJava = 'io.reactivex:rxjava:1.0.14'
+  rxAndroid = 'io.reactivex:rxandroid:1.0.1'
+  rxBinding = 'com.jakewharton.rxbinding:rxbinding:0.2.0'
+  truth = 'com.google.truth:truth:0.27'
   findbugsJsr305 = 'com.google.code.findbugs:jsr305:3.0.0'
   findbugsAnnotations = 'com.google.code.findbugs:annotations:3.0.0'
 }

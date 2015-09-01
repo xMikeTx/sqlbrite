@@ -21,7 +21,7 @@ Pass a `SQLiteOpenHelper` instance to create a `BriteDatabase`.
 BriteDatabase db = sqlBrite.wrapDatabaseHelper(openHelper);
 ```
 
-The `BriteDatabase.createQuery` method is similar to `SQLiteOpenHelper.rawQuery` except it takes an
+The `BriteDatabase.createQuery` method is similar to `SQLiteDatabase.rawQuery` except it takes an
 additional parameter of table(s) on which to listen for changes. Subscribe to the returned
 `Observable<Query>` which will immediately notify with a `Query` to run.
 
@@ -89,18 +89,19 @@ users.subscribe(new Action1<Query>() {
 });
 System.out.println("Queries: " + queries.get()); // Prints 1
 
-db.beginTransaction();
+Transaction transaction = db.newTransaction();
 try {
   db.insert("users", createUser("jw", "Jake Wharton"));
   db.insert("users", createUser("mattp", "Matt Precious"));
   db.insert("users", createUser("strong", "Alec Strong"));
-  db.setTransactionSuccessful();
+  transaction.setSuccessful();
 } finally {
-  db.endTransaction();
+  transaction.end();
 }
 
 System.out.println("Queries: " + queries.get()); // Prints 2
 ```
+*Note: You can also use try-with-resources with a `Transaction` instance.*
 
 Since queries are just regular RxJava `Observable` objects, operators can also be used to
 control the frequency of notifications to subscribers.
@@ -143,7 +144,7 @@ Download
 --------
 
 ```groovy
-compile 'com.squareup.sqlbrite:sqlbrite:0.1.0'
+compile 'com.squareup.sqlbrite:sqlbrite:0.3.0'
 ```
 
 Snapshots of the development version are available in [Sonatype's `snapshots` repository][snap].

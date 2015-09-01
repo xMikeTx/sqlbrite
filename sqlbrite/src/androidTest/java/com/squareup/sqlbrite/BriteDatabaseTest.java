@@ -22,6 +22,9 @@ import android.database.sqlite.SQLiteException;
 import android.support.test.InstrumentationRegistry;
 import android.support.test.runner.AndroidJUnit4;
 import com.google.common.collect.Range;
+import com.squareup.sqlbrite.BriteDatabase.Transaction;
+import com.squareup.sqlbrite.TestDb.Employee;
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -113,6 +116,17 @@ public final class BriteDatabaseTest {
         .hasRow("bob", "Bob Bobberson")
         .hasRow("eve", "Eve Evenson")
         .isExhausted();
+  }
+
+  @Test public void queryMapToList() {
+    List<Employee> employees = db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES)
+        .mapToList(Employee.MAPPER)
+        .toBlocking()
+        .first();
+    assertThat(employees).containsExactly( //
+        new Employee("alice", "Alice Allison"),
+        new Employee("bob", "Bob Bobberson"),
+        new Employee("eve", "Eve Evenson"));
   }
 
   @Test public void badQueryCallsError() {
@@ -334,15 +348,69 @@ public final class BriteDatabaseTest {
         .hasRow("eve", "Eve Evenson")
         .isExhausted();
 
-    db.beginTransaction();
+    Transaction transaction = db.newTransaction();
     try {
       db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
       db.insert(TABLE_EMPLOYEE, employee("nick", "Nick Nickers"));
       o.assertNoMoreEvents();
 
-      db.setTransactionSuccessful();
+      transaction.markSuccessful();
     } finally {
-      db.endTransaction();
+      transaction.end();
+    }
+
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .hasRow("john", "John Johnson")
+        .hasRow("nick", "Nick Nickers")
+        .isExhausted();
+  }
+
+  @Test public void transactionIsCloseable() throws IOException {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES).subscribe(o);
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .isExhausted();
+
+    Transaction transaction = db.newTransaction();
+    //noinspection UnnecessaryLocalVariable
+    Closeable closeableTransaction = transaction; // Verify type is implemented.
+    try {
+      db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
+      db.insert(TABLE_EMPLOYEE, employee("nick", "Nick Nickers"));
+      transaction.markSuccessful();
+    } finally {
+      closeableTransaction.close();
+    }
+
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .hasRow("john", "John Johnson")
+        .hasRow("nick", "Nick Nickers")
+        .isExhausted();
+  }
+
+  @Test public void transactionDoesNotThrow() {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES).subscribe(o);
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .isExhausted();
+
+    Transaction transaction = db.newTransaction();
+    try {
+      db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
+      db.insert(TABLE_EMPLOYEE, employee("nick", "Nick Nickers"));
+      transaction.markSuccessful();
+    } finally {
+      transaction.close(); // Transactions should not throw on close().
     }
 
     o.assertCursor()
@@ -355,7 +423,7 @@ public final class BriteDatabaseTest {
   }
 
   @Test public void queryCreatedDuringTransactionThrows() {
-    db.beginTransaction();
+    db.newTransaction();
     try {
       db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES);
       fail();
@@ -367,14 +435,16 @@ public final class BriteDatabaseTest {
   @Test public void querySubscribedToDuringTransactionThrows() {
     Observable<Query> query = db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES);
 
-    db.beginTransaction();
+    db.newTransaction();
     query.subscribe(o);
     o.assertErrorContains("Cannot subscribe to observable query in a transaction.");
   }
 
-  @Test public void endTransactionWithNoBeginFails() {
+  @Test public void callingEndMultipleTimesThrows() {
+    Transaction transaction = db.newTransaction();
+    transaction.end();
     try {
-      db.endTransaction();
+      transaction.end();
       fail();
     } catch (IllegalStateException e) {
       assertThat(e).hasMessage("Not in transaction.");
@@ -383,7 +453,7 @@ public final class BriteDatabaseTest {
 
   @Test public void querySubscribedToDuringTransactionOnDifferentThread()
       throws InterruptedException {
-    db.beginTransaction();
+    Transaction transaction = db.newTransaction();
 
     final CountDownLatch latch = new CountDownLatch(1);
     new Thread() {
@@ -396,7 +466,7 @@ public final class BriteDatabaseTest {
     Thread.sleep(500); // Wait for the thread to block on initial query.
     o.assertNoMoreEvents();
 
-    db.endTransaction(); // Allow other queries to continue.
+    transaction.end(); // Allow other queries to continue.
     latch.await(500, MILLISECONDS); // Wait for thread to observe initial query.
 
     o.assertCursor()
@@ -409,13 +479,13 @@ public final class BriteDatabaseTest {
   @Test public void queryCreatedBeforeTransactionButSubscribedAfter() {
     Observable<Query> query = db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES);
 
-    db.beginTransaction();
+    Transaction transaction = db.newTransaction();
     try {
       db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
       db.insert(TABLE_EMPLOYEE, employee("nick", "Nick Nickers"));
-      db.setTransactionSuccessful();
+      transaction.markSuccessful();
     } finally {
-      db.endTransaction();
+      transaction.end();
     }
 
     query.subscribe(o);
@@ -429,21 +499,21 @@ public final class BriteDatabaseTest {
   }
 
   @Test public void synchronousQueryDuringTransaction() {
-    db.beginTransaction();
+    Transaction transaction = db.newTransaction();
     try {
-      db.setTransactionSuccessful();
+      transaction.markSuccessful();
       assertCursor(db.query(SELECT_EMPLOYEES))
           .hasRow("alice", "Alice Allison")
           .hasRow("bob", "Bob Bobberson")
           .hasRow("eve", "Eve Evenson")
           .isExhausted();
     } finally {
-      db.endTransaction();
+      transaction.end();
     }
   }
 
   @Test public void synchronousQueryDuringTransactionSeesChanges() {
-    db.beginTransaction();
+    Transaction transaction = db.newTransaction();
     try {
       assertCursor(db.query(SELECT_EMPLOYEES))
           .hasRow("alice", "Alice Allison")
@@ -462,9 +532,9 @@ public final class BriteDatabaseTest {
           .hasRow("nick", "Nick Nickers")
           .isExhausted();
 
-      db.setTransactionSuccessful();
+      transaction.markSuccessful();
     } finally {
-      db.endTransaction();
+      transaction.end();
     }
   }
 
@@ -476,21 +546,21 @@ public final class BriteDatabaseTest {
         .hasRow("eve", "Eve Evenson")
         .isExhausted();
 
-    db.beginTransaction();
+    Transaction transactionOuter = db.newTransaction();
     try {
       db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
 
-      db.beginTransaction();
+      Transaction transactionInner = db.newTransaction();
       try {
         db.insert(TABLE_EMPLOYEE, employee("nick", "Nick Nickers"));
-        db.setTransactionSuccessful();
+        transactionInner.markSuccessful();
       } finally {
-        db.endTransaction();
+        transactionInner.end();
       }
 
-      db.setTransactionSuccessful();
+      transactionOuter.markSuccessful();
     } finally {
-      db.endTransaction();
+      transactionOuter.end();
     }
 
     o.assertCursor()
@@ -508,28 +578,28 @@ public final class BriteDatabaseTest {
         .hasRow("Eve Evenson", "Alice Allison")
         .isExhausted();
 
-    db.beginTransaction();
+    Transaction transactionOuter = db.newTransaction();
     try {
 
-      db.beginTransaction();
+      Transaction transactionInner = db.newTransaction();
       try {
         db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
-        db.setTransactionSuccessful();
+        transactionInner.markSuccessful();
       } finally {
-        db.endTransaction();
+        transactionInner.end();
       }
 
-      db.beginTransaction();
+      transactionInner = db.newTransaction();
       try {
         db.insert(TABLE_MANAGER, manager(helper.aliceId, helper.bobId));
-        db.setTransactionSuccessful();
+        transactionInner.markSuccessful();
       } finally {
-        db.endTransaction();
+        transactionInner.end();
       }
 
-      db.setTransactionSuccessful();
+      transactionOuter.markSuccessful();
     } finally {
-      db.endTransaction();
+      transactionOuter.end();
     }
 
     o.assertCursor()
@@ -546,11 +616,11 @@ public final class BriteDatabaseTest {
         .hasRow("eve", "Eve Evenson")
         .isExhausted();
 
-    db.beginTransaction();
+    Transaction transaction = db.newTransaction();
     try {
-      db.setTransactionSuccessful();
+      transaction.markSuccessful();
     } finally {
-      db.endTransaction();
+      transaction.end();
     }
     o.assertNoMoreEvents();
   }
@@ -563,14 +633,59 @@ public final class BriteDatabaseTest {
         .hasRow("eve", "Eve Evenson")
         .isExhausted();
 
-    db.beginTransaction();
+    Transaction transaction = db.newTransaction();
     try {
       db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
       db.insert(TABLE_EMPLOYEE, employee("nick", "Nick Nickers"));
       // No call to set successful.
     } finally {
-      db.endTransaction();
+      transaction.end();
     }
+    o.assertNoMoreEvents();
+  }
+
+  @Test public void backpressureSupported() {
+    o.doRequest(2);
+
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES).subscribe(o);
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .isExhausted();
+
+    db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .hasRow("john", "John Johnson")
+        .isExhausted();
+
+    db.insert(TABLE_EMPLOYEE, employee("nick", "Nick Nickers"));
+    o.assertNoMoreEvents();
+
+    db.delete(TABLE_EMPLOYEE, USERNAME + "=?", "bob");
+    o.assertNoMoreEvents();
+
+    o.doRequest(1);
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("eve", "Eve Evenson")
+        .hasRow("john", "John Johnson")
+        .hasRow("nick", "Nick Nickers")
+        .isExhausted();
+
+    db.delete(TABLE_EMPLOYEE, USERNAME + "=?", "eve");
+    o.assertNoMoreEvents();
+    db.delete(TABLE_EMPLOYEE, USERNAME + "=?", "alice");
+    o.assertNoMoreEvents();
+
+    o.doRequest(Long.MAX_VALUE);
+    o.assertCursor()
+        .hasRow("john", "John Johnson")
+        .hasRow("nick", "Nick Nickers")
+        .isExhausted();
     o.assertNoMoreEvents();
   }
 

@@ -31,8 +31,8 @@ import rx.subscriptions.Subscriptions;
 
 import static com.google.common.truth.Truth.assertThat;
 
-public final class BriteContentResolverTests
-    extends ProviderTestCase2<BriteContentResolverTests.TestContentProvider> {
+public final class BriteContentResolverTest
+    extends ProviderTestCase2<BriteContentResolverTest.TestContentProvider> {
   private static final Uri AUTHORITY = Uri.parse("content://test_authority");
   private static final Uri TABLE = AUTHORITY.buildUpon().appendPath("test_table").build();
   private static final String KEY = "test_key";
@@ -45,7 +45,7 @@ public final class BriteContentResolverTests
   private BriteContentResolver db;
   private Subscription subscription;
 
-  public BriteContentResolverTests() {
+  public BriteContentResolverTest() {
     super(TestContentProvider.class, AUTHORITY.getAuthority());
   }
 
@@ -121,6 +121,52 @@ public final class BriteContentResolverTests
     contentResolver.insert(TABLE, values("key1", "val1"));
     o.assertNoMoreEvents();
     assertThat(logs).isEmpty();
+  }
+
+  public void testBackpressureSupported() {
+    contentResolver.insert(TABLE, values("key1", "val1"));
+    o.doRequest(2);
+
+    subscription = db.createQuery(TABLE, null, null, null, null, false).subscribe(o);
+    o.assertCursor()
+        .hasRow("key1", "val1")
+        .isExhausted();
+
+    contentResolver.insert(TABLE, values("key2", "val2"));
+    o.assertCursor()
+        .hasRow("key1", "val1")
+        .hasRow("key2", "val2")
+        .isExhausted();
+
+    contentResolver.insert(TABLE, values("key3", "val3"));
+    o.assertNoMoreEvents();
+
+    contentResolver.insert(TABLE, values("key4", "val4"));
+    o.assertNoMoreEvents();
+
+    o.doRequest(1);
+    o.assertCursor()
+        .hasRow("key1", "val1")
+        .hasRow("key2", "val2")
+        .hasRow("key3", "val3")
+        .hasRow("key4", "val4")
+        .isExhausted();
+
+    contentResolver.insert(TABLE, values("key5", "val5"));
+    o.assertNoMoreEvents();
+    contentResolver.insert(TABLE, values("key6", "val6"));
+    o.assertNoMoreEvents();
+
+    o.doRequest(Long.MAX_VALUE);
+    o.assertCursor()
+        .hasRow("key1", "val1")
+        .hasRow("key2", "val2")
+        .hasRow("key3", "val3")
+        .hasRow("key4", "val4")
+        .hasRow("key5", "val5")
+        .hasRow("key6", "val6")
+        .isExhausted();
+    o.assertNoMoreEvents();
   }
 
   private ContentValues values(String key, String value) {

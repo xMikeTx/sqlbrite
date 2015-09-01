@@ -21,10 +21,12 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.support.annotation.CheckResult;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import java.util.Arrays;
 import rx.Observable;
+import rx.Observable.OnSubscribe;
 import rx.Subscriber;
 import rx.functions.Action0;
 import rx.subscriptions.Subscriptions;
@@ -69,7 +71,8 @@ public final class BriteContentResolver {
    * @see ContentResolver#query(Uri, String[], String, String[], String)
    * @see ContentResolver#registerContentObserver(Uri, boolean, ContentObserver)
    */
-  public Observable<Query> createQuery(@NonNull final Uri uri, @Nullable final String[] projection,
+  @CheckResult @NonNull
+  public QueryObservable createQuery(@NonNull final Uri uri, @Nullable final String[] projection,
       @Nullable final String selection, @Nullable final String[] selectionArgs, @Nullable
       final String sortOrder, final boolean notifyForDescendents) {
     final Query query = new Query() {
@@ -77,7 +80,7 @@ public final class BriteContentResolver {
         return contentResolver.query(uri, projection, selection, selectionArgs, sortOrder);
       }
     };
-    return Observable.create(new Observable.OnSubscribe<Query>() {
+    OnSubscribe<Query> subscribe = new OnSubscribe<Query>() {
       @Override public void call(final Subscriber<? super Query> subscriber) {
         final ContentObserver observer = new ContentObserver(contentObserverHandler) {
           @Override public void onChange(boolean selfChange) {
@@ -97,7 +100,11 @@ public final class BriteContentResolver {
           }
         }));
       }
-    }).startWith(query);
+    };
+    Observable<Query> queryObservable = Observable.create(subscribe) //
+        .startWith(query) //
+        .lift(BackpressureBufferLastOperator.<Query>instance());
+    return new QueryObservable(queryObservable);
   }
 
   private void log(String message, Object... args) {
