@@ -17,6 +17,7 @@ package com.squareup.sqlbrite;
 
 import android.content.ContentValues;
 import android.database.Cursor;
+import android.database.SQLException;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteException;
 import android.support.test.InstrumentationRegistry;
@@ -28,7 +29,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -38,16 +38,17 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import rx.Observable;
 import rx.Subscription;
+import rx.functions.Action1;
 
 import static android.database.sqlite.SQLiteDatabase.CONFLICT_IGNORE;
 import static com.google.common.truth.Truth.assertThat;
 import static com.squareup.sqlbrite.RecordingObserver.CursorAssert;
 import static com.squareup.sqlbrite.SqlBrite.Query;
-import static com.squareup.sqlbrite.TestDb.EmployeeTable.ID;
+import static com.squareup.sqlbrite.TestDb.BOTH_TABLES;
 import static com.squareup.sqlbrite.TestDb.EmployeeTable.NAME;
 import static com.squareup.sqlbrite.TestDb.EmployeeTable.USERNAME;
-import static com.squareup.sqlbrite.TestDb.ManagerTable.EMPLOYEE_ID;
-import static com.squareup.sqlbrite.TestDb.ManagerTable.MANAGER_ID;
+import static com.squareup.sqlbrite.TestDb.SELECT_EMPLOYEES;
+import static com.squareup.sqlbrite.TestDb.SELECT_MANAGER_LIST;
 import static com.squareup.sqlbrite.TestDb.TABLE_EMPLOYEE;
 import static com.squareup.sqlbrite.TestDb.TABLE_MANAGER;
 import static com.squareup.sqlbrite.TestDb.employee;
@@ -57,18 +58,6 @@ import static org.junit.Assert.fail;
 
 @RunWith(AndroidJUnit4.class)
 public final class BriteDatabaseTest {
-  private static final Collection<String> BOTH_TABLES =
-      Arrays.asList(TABLE_EMPLOYEE, TABLE_MANAGER);
-  private static final String SELECT_EMPLOYEES =
-      "SELECT " + USERNAME + ", " + NAME + " FROM " + TABLE_EMPLOYEE;
-  private static final String SELECT_MANAGER_LIST = ""
-      + "SELECT e." + NAME + ", m." + NAME + " "
-      + "FROM " + TABLE_MANAGER + " AS manager "
-      + "JOIN " + TABLE_EMPLOYEE + " AS e "
-      + "ON manager." + EMPLOYEE_ID + " = e." + ID + " "
-      + "JOIN " + TABLE_EMPLOYEE + " as m "
-      + "ON manager." + MANAGER_ID + " = m." + ID;
-
   private final List<String> logs = new ArrayList<>();
   private final RecordingObserver o = new RecordingObserver();
 
@@ -124,9 +113,25 @@ public final class BriteDatabaseTest {
         .toBlocking()
         .first();
     assertThat(employees).containsExactly( //
-        new Employee("alice", "Alice Allison"),
-        new Employee("bob", "Bob Bobberson"),
+        new Employee("alice", "Alice Allison"), //
+        new Employee("bob", "Bob Bobberson"), //
         new Employee("eve", "Eve Evenson"));
+  }
+
+  @Test public void queryMapToOne() {
+    Employee employees = db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES + " LIMIT 1")
+        .mapToOne(Employee.MAPPER)
+        .toBlocking()
+        .first();
+    assertThat(employees).isEqualTo(new Employee("alice", "Alice Allison"));
+  }
+
+  @Test public void queryMapToOneOrDefault() {
+    Employee employees = db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES + " LIMIT 1")
+        .mapToOneOrDefault(Employee.MAPPER, null)
+        .toBlocking()
+        .first();
+    assertThat(employees).isEqualTo(new Employee("alice", "Alice Allison"));
   }
 
   @Test public void badQueryCallsError() {
@@ -340,6 +345,86 @@ public final class BriteDatabaseTest {
         .isExhausted();
   }
 
+  @Test public void executeSqlNoTrigger() {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES)
+        .skip(1) // Skip initial
+        .subscribe(o);
+
+    db.execute("UPDATE " + TABLE_EMPLOYEE + " SET " + TestDb.EmployeeTable.NAME + " = 'Zach'");
+    o.assertNoMoreEvents();
+  }
+
+  @Test public void executeSqlWithArgsNoTrigger() {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES)
+        .skip(1) // Skip initial
+        .subscribe(o);
+
+    db.execute("UPDATE " + TABLE_EMPLOYEE + " SET " + TestDb.EmployeeTable.NAME + " = ?", "Zach");
+    o.assertNoMoreEvents();
+  }
+
+  @Test public void executeSqlAndTrigger() {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES).subscribe(o);
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .isExhausted();
+
+    db.executeAndTrigger(TABLE_EMPLOYEE,
+        "UPDATE " + TABLE_EMPLOYEE + " SET " + TestDb.EmployeeTable.NAME + " = 'Zach'");
+    o.assertCursor()
+        .hasRow("alice", "Zach")
+        .hasRow("bob", "Zach")
+        .hasRow("eve", "Zach")
+        .isExhausted();
+  }
+
+  @Test public void executeSqlThrowsAndDoesNotTrigger() {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES)
+        .skip(1) // Skip initial
+        .subscribe(o);
+
+    try {
+      db.executeAndTrigger(TABLE_EMPLOYEE,
+          "UPDATE not_a_table SET " + TestDb.EmployeeTable.NAME + " = 'Zach'");
+      fail();
+    } catch (SQLException ignored) {
+    }
+    o.assertNoMoreEvents();
+  }
+
+  @Test public void executeSqlWithArgsAndTrigger() {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES).subscribe(o);
+    o.assertCursor()
+        .hasRow("alice", "Alice Allison")
+        .hasRow("bob", "Bob Bobberson")
+        .hasRow("eve", "Eve Evenson")
+        .isExhausted();
+
+    db.executeAndTrigger(TABLE_EMPLOYEE,
+        "UPDATE " + TABLE_EMPLOYEE + " SET " + TestDb.EmployeeTable.NAME + " = ?", "Zach");
+    o.assertCursor()
+        .hasRow("alice", "Zach")
+        .hasRow("bob", "Zach")
+        .hasRow("eve", "Zach")
+        .isExhausted();
+  }
+
+  @Test public void executeSqlWithArgsThrowsAndDoesNotTrigger() {
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES)
+        .skip(1) // Skip initial
+        .subscribe(o);
+
+    try {
+      db.executeAndTrigger(TABLE_EMPLOYEE,
+          "UPDATE not_a_table SET " + TestDb.EmployeeTable.NAME + " = ?", "Zach");
+      fail();
+    } catch (SQLException ignored) {
+    }
+    o.assertNoMoreEvents();
+  }
+
   @Test public void transactionOnlyNotifiesOnce() {
     db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES).subscribe(o);
     o.assertCursor()
@@ -366,6 +451,27 @@ public final class BriteDatabaseTest {
         .hasRow("john", "John Johnson")
         .hasRow("nick", "Nick Nickers")
         .isExhausted();
+  }
+
+  @Test public void transactionCreatedFromTransactionNotificationWorks() {
+    // Tests the case where a transaction is created in the subscriber to a query which gets
+    // notified as the result of another transaction being committed. With improper ordering, this
+    // can result in creating a new transaction before the old is committed on the underlying DB.
+
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES)
+        .subscribe(new Action1<Query>() {
+          @Override public void call(Query query) {
+            db.newTransaction().end();
+          }
+        });
+
+    Transaction transaction = db.newTransaction();
+    try {
+      db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
+      transaction.markSuccessful();
+    } finally {
+      transaction.end();
+    }
   }
 
   @Test public void transactionIsCloseable() throws IOException {

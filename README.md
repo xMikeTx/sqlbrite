@@ -94,7 +94,7 @@ try {
   db.insert("users", createUser("jw", "Jake Wharton"));
   db.insert("users", createUser("mattp", "Matt Precious"));
   db.insert("users", createUser("strong", "Alec Strong"));
-  transaction.setSuccessful();
+  transaction.markSuccessful();
 } finally {
   transaction.end();
 }
@@ -118,7 +118,7 @@ The `SqlBrite` object can also wrap a `ContentResolver` for observing a query on
 content provider.
 
 ```java
-BriteContentResolver resolver = sqlBrite.wrapContentResolver(contentResolver);
+BriteContentResolver resolver = sqlBrite.wrapContentProvider(contentResolver);
 Observable<Query> query = resolver.createQuery(/*...*/);
 ```
 
@@ -144,7 +144,7 @@ Download
 --------
 
 ```groovy
-compile 'com.squareup.sqlbrite:sqlbrite:0.3.0'
+compile 'com.squareup.sqlbrite:sqlbrite:0.5.0'
 ```
 
 Snapshots of the development version are available in [Sonatype's `snapshots` repository][snap].

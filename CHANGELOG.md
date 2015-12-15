@@ -1,6 +1,44 @@
 Change Log
 =========
 
+Version 0.5.0 *(In Development)*
+--------------------------------
+
+ * New: Expose `mapToOne`, `mapToOneOrDefault`, and `mapToList` as static methods on `Query`. These
+   mirror the behavior of the methods of the same name on `QueryObservable` but can be used later in
+   a stream by passing the returned `Operator` instances to `lift()` (e.g.,
+   `take(1).lift(Query.mapToOne(..))`).
+ * Requires RxJava 1.1.0 or newer.
+
+
+Version 0.4.1 *(2015-10-19)*
+----------------------------
+
+ * New: `execute` method provides the ability to execute arbitrary SQL statements.
+ * New: `executeAndTrigger` method provides the ability to execute arbitrary SQL statements and
+   notifying any queries to update on the specified table.
+ * Fix: `Query.asRows` no longer calls `onCompleted` when the downstream subscriber has unsubscribed.
+
+
+Version 0.4.0 *(2015-09-22)*
+----------------------------
+
+ * New: `mapToOneOrDefault` replaces `mapToOneOrNull` for more flexibility.
+ * Fix: Notifications of table updates as the result of a transaction now occur after the transaction
+   has been applied. Previous the notification would happen during the commit at which time it was
+   invalid to create a new transaction in a subscriber.
+
+
+Version 0.3.1 *(2015-09-02)*
+----------------------------
+
+ * New: `mapToOne` and `mapToOneOrNull` operators on `QueryObservable`. These work on queries which
+   return 0 or 1 rows and are a convenience for turning them into a type `T` given a mapper of type
+   `Func1<Cursor, T>` (the same which can be used for `mapToList`).
+ * Fix: Remove `@WorkerThread` annotations for now. Various combinations of lint, RxJava, and
+   retrolambda can cause false-positives.
+
+
 Version 0.3.0 *(2015-08-31)*
 ----------------------------
 

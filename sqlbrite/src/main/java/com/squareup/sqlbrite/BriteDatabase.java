@@ -24,7 +24,6 @@ import android.support.annotation.CheckResult;
 import android.support.annotation.IntDef;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.annotation.WorkerThread;
 import com.squareup.sqlbrite.SqlBrite.Query;
 import java.io.Closeable;
 import java.io.IOException;
@@ -84,6 +83,10 @@ public final class BriteDatabase implements Closeable {
       transactions.set(newTransaction);
       if (logging) log("TXN END %s", transaction);
       getWriteableDatabase().endTransaction();
+      // Send the triggers after ending the transaction in the DB.
+      if (transaction.commit) {
+        sendTableTrigger(transaction);
+      }
     }
 
     @Override public void close() {
@@ -147,7 +150,7 @@ public final class BriteDatabase implements Closeable {
   private void sendTableTrigger(Set<String> tables) {
     SqliteTransaction transaction = transactions.get();
     if (transaction != null) {
-      transaction.triggers.addAll(tables);
+      transaction.addAll(tables);
     } else {
       if (logging) log("TRIGGER %s", tables);
       triggers.onNext(tables);
@@ -223,6 +226,9 @@ public final class BriteDatabase implements Closeable {
    * notifications for when the supplied {@code table}'s data changes through the {@code insert},
    * {@code update}, and {@code delete} methods of this class. Unsubscribe when you no longer want
    * updates to a query.
+   * <p>
+   * Note: To skip the immediate notification and only receive subsequent notifications when data
+   * has changed call {@code skip(1)} on the returned observable.
    * <p>
    * <b>Warning:</b> this method does not perform the query! Only by subscribing to the returned
    * {@link Observable} will the operation occur.
@@ -307,7 +313,7 @@ public final class BriteDatabase implements Closeable {
             return query;
           }
         }) //
-        .lift(BackpressureBufferLastOperator.<Query>instance());
+        .onBackpressureLatest();
     return new QueryObservable(queryObservable);
   }
 
@@ -316,7 +322,7 @@ public final class BriteDatabase implements Closeable {
    *
    * @see SQLiteDatabase#rawQuery(String, String[])
    */
-  @CheckResult @WorkerThread
+  @CheckResult // TODO @WorkerThread
   public Cursor query(@NonNull String sql, @NonNull String... args) {
     if (logging) log("QUERY\n  sql: %s\n  args: %s", sql, Arrays.toString(args));
     return getReadableDatabase().rawQuery(sql, args);
@@ -327,7 +333,7 @@ public final class BriteDatabase implements Closeable {
    *
    * @see SQLiteDatabase#insert(String, String, ContentValues)
    */
-  @WorkerThread
+  // TODO @WorkerThread
   public long insert(@NonNull String table, @NonNull ContentValues values) {
     return insert(table, values, CONFLICT_NONE);
   }
@@ -337,7 +343,7 @@ public final class BriteDatabase implements Closeable {
    *
    * @see SQLiteDatabase#insertWithOnConflict(String, String, ContentValues, int)
    */
-  @WorkerThread
+  // TODO @WorkerThread
   public long insert(@NonNull String table, @NonNull ContentValues values,
       @ConflictAlgorithm int conflictAlgorithm) {
     SQLiteDatabase db = getWriteableDatabase();
@@ -363,7 +369,7 @@ public final class BriteDatabase implements Closeable {
    *
    * @see SQLiteDatabase#delete(String, String, String[])
    */
-  @WorkerThread
+  // TODO @WorkerThread
   public int delete(@NonNull String table, @Nullable String whereClause,
       @Nullable String... whereArgs) {
     SQLiteDatabase db = getWriteableDatabase();
@@ -389,7 +395,7 @@ public final class BriteDatabase implements Closeable {
    *
    * @see SQLiteDatabase#update(String, ContentValues, String, String[])
    */
-  @WorkerThread
+  // TODO @WorkerThread
   public int update(@NonNull String table, @NonNull ContentValues values,
       @Nullable String whereClause, @Nullable String... whereArgs) {
     return update(table, values, CONFLICT_NONE, whereClause, whereArgs);
@@ -401,7 +407,7 @@ public final class BriteDatabase implements Closeable {
    *
    * @see SQLiteDatabase#updateWithOnConflict(String, ContentValues, String, String[], int)
    */
-  @WorkerThread
+  // TODO @WorkerThread
   public int update(@NonNull String table, @NonNull ContentValues values,
       @ConflictAlgorithm int conflictAlgorithm, @Nullable String whereClause,
       @Nullable String... whereArgs) {
@@ -423,6 +429,66 @@ public final class BriteDatabase implements Closeable {
     return rows;
   }
 
+  /**
+   * Execute {@code sql} provided it is NOT a {@code SELECT} or any other SQL statement that
+   * returns data. No data can be returned (such as the number of affected rows). Instead, use
+   * {@link #insert}, {@link #update}, et al, when possible.
+   * <p>
+   * No notifications will be sent to queries if {@code sql} affects the data of a table.
+   *
+   * @see SQLiteDatabase#execSQL(String)
+   */
+  public void execute(String sql) {
+    SQLiteDatabase db = getWriteableDatabase();
+    db.execSQL(sql);
+  }
+
+  /**
+   * Execute {@code sql} provided it is NOT a {@code SELECT} or any other SQL statement that
+   * returns data. No data can be returned (such as the number of affected rows). Instead, use
+   * {@link #insert}, {@link #update}, et al, when possible.
+   * <p>
+   * No notifications will be sent to queries if {@code sql} affects the data of a table.
+   *
+   * @see SQLiteDatabase#execSQL(String, Object[])
+   */
+  public void execute(String sql, Object... args) {
+    SQLiteDatabase db = getWriteableDatabase();
+    db.execSQL(sql, args);
+  }
+
+  /**
+   * Execute {@code sql} provided it is NOT a {@code SELECT} or any other SQL statement that
+   * returns data. No data can be returned (such as the number of affected rows). Instead, use
+   * {@link #insert}, {@link #update}, et al, when possible.
+   * <p>
+   * A notification to queries for {@code table} will be sent after the statement is executed.
+   *
+   * @see SQLiteDatabase#execSQL(String)
+   */
+  public void executeAndTrigger(String table, String sql) {
+    SQLiteDatabase db = getWriteableDatabase();
+    db.execSQL(sql);
+
+    sendTableTrigger(Collections.singleton(table));
+  }
+
+  /**
+   * Execute {@code sql} provided it is NOT a {@code SELECT} or any other SQL statement that
+   * returns data. No data can be returned (such as the number of affected rows). Instead, use
+   * {@link #insert}, {@link #update}, et al, when possible.
+   * <p>
+   * A notification to queries for {@code table} will be sent after the statement is executed.
+   *
+   * @see SQLiteDatabase#execSQL(String, Object[])
+   */
+  public void executeAndTrigger(String table, String sql, Object... args) {
+    SQLiteDatabase db = getWriteableDatabase();
+    db.execSQL(sql, args);
+
+    sendTableTrigger(Collections.singleton(table));
+  }
+
   /** An in-progress database transaction. */
   public interface Transaction extends Closeable {
     /**
@@ -431,7 +497,7 @@ public final class BriteDatabase implements Closeable {
      *
      * @see SQLiteDatabase#endTransaction()
      */
-    @WorkerThread
+    // TODO @WorkerThread
     void end();
 
     /**
@@ -442,7 +508,7 @@ public final class BriteDatabase implements Closeable {
      *
      * @see SQLiteDatabase#setTransactionSuccessful()
      */
-    @WorkerThread
+    // TODO @WorkerThread
     void markSuccessful();
 
     /**
@@ -456,7 +522,7 @@ public final class BriteDatabase implements Closeable {
      *
      * @see SQLiteDatabase#yieldIfContendedSafely()
      */
-    @WorkerThread
+    // TODO @WorkerThread
     boolean yieldIfContendedSafely();
 
     /**
@@ -473,13 +539,13 @@ public final class BriteDatabase implements Closeable {
      *
      * @see SQLiteDatabase#yieldIfContendedSafely(long)
      */
-    @WorkerThread
+    // TODO @WorkerThread
     boolean yieldIfContendedSafely(long sleepAmount, TimeUnit sleepUnit);
 
     /**
      * Equivalent to calling {@link #end()}
      */
-    @WorkerThread
+    // TODO @WorkerThread
     @Override void close();
   }
 
@@ -519,9 +585,10 @@ public final class BriteDatabase implements Closeable {
     }
   }
 
-  private final class SqliteTransaction implements SQLiteTransactionListener {
+  static final class SqliteTransaction extends LinkedHashSet<String>
+      implements SQLiteTransactionListener {
     final SqliteTransaction parent;
-    final Set<String> triggers = new LinkedHashSet<>();
+    boolean commit;
 
     SqliteTransaction(SqliteTransaction parent) {
       this.parent = parent;
@@ -531,7 +598,7 @@ public final class BriteDatabase implements Closeable {
     }
 
     @Override public void onCommit() {
-      sendTableTrigger(triggers);
+      commit = true;
     }
 
     @Override public void onRollback() {
