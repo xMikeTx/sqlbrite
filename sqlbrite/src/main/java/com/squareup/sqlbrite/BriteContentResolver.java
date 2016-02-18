@@ -27,28 +27,33 @@ import android.support.annotation.Nullable;
 import java.util.Arrays;
 import rx.Observable;
 import rx.Observable.OnSubscribe;
+import rx.Scheduler;
 import rx.Subscriber;
 import rx.functions.Action0;
 import rx.subscriptions.Subscriptions;
 
 import static com.squareup.sqlbrite.SqlBrite.Logger;
 import static com.squareup.sqlbrite.SqlBrite.Query;
+import static java.lang.System.nanoTime;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 /**
  * A lightweight wrapper around {@link ContentResolver} which allows for continuously observing
  * the result of a query. Create using a {@link SqlBrite} instance.
  */
 public final class BriteContentResolver {
-  private final Handler contentObserverHandler = new Handler(Looper.getMainLooper());
+  final Handler contentObserverHandler = new Handler(Looper.getMainLooper());
 
-  private final ContentResolver contentResolver;
+  final ContentResolver contentResolver;
   private final Logger logger;
+  private final Scheduler scheduler;
 
-  private volatile boolean logging;
+  volatile boolean logging;
 
-  BriteContentResolver(@NonNull ContentResolver contentResolver, @NonNull Logger logger) {
+  BriteContentResolver(ContentResolver contentResolver, Logger logger, Scheduler scheduler) {
     this.contentResolver = contentResolver;
     this.logger = logger;
+    this.scheduler = scheduler;
   }
 
   /** Control whether debug logging is enabled. */
@@ -65,6 +70,11 @@ public final class BriteContentResolver {
    * notifications for when the supplied {@code uri}'s data changes. Unsubscribe when you no longer
    * want updates to a query.
    * <p>
+   * Since content resolver triggers are inherently asynchronous, items emitted from the returned
+   * observable use the {@link Scheduler} supplied to {@link SqlBrite#wrapContentProvider}. For
+   * consistency, the immediate notification sent on subscribe also uses this scheduler. As such,
+   * calling {@link Observable#subscribeOn subscribeOn} on the returned observable has no effect.
+   * <p>
    * Note: To skip the immediate notification and only receive subsequent notifications when data
    * has changed call {@code skip(1)} on the returned observable.
    * <p>
@@ -80,19 +90,24 @@ public final class BriteContentResolver {
       final String sortOrder, final boolean notifyForDescendents) {
     final Query query = new Query() {
       @Override public Cursor run() {
-        return contentResolver.query(uri, projection, selection, selectionArgs, sortOrder);
+        long startNanos = nanoTime();
+        Cursor cursor = contentResolver.query(uri, projection, selection, selectionArgs, sortOrder);
+
+        if (logging) {
+          long tookMillis = NANOSECONDS.toMillis(nanoTime() - startNanos);
+          log("QUERY (%sms)\n  uri: %s\n  projection: %s\n  selection: %s\n  selectionArgs: %s\n  "
+                  + "sortOrder: %s\n  notifyForDescendents: %s", tookMillis, uri,
+              Arrays.toString(projection), selection, Arrays.toString(selectionArgs), sortOrder,
+              notifyForDescendents);
+        }
+
+        return cursor;
       }
     };
     OnSubscribe<Query> subscribe = new OnSubscribe<Query>() {
       @Override public void call(final Subscriber<? super Query> subscriber) {
         final ContentObserver observer = new ContentObserver(contentObserverHandler) {
           @Override public void onChange(boolean selfChange) {
-            if (logging) {
-              log("QUERY\n  uri: %s\n  projection: %s\n  selection: %s\n  selectionArgs: %s\n  "
-                      + "sortOrder: %s\n  notifyForDescendents: %s", uri,
-                  Arrays.toString(projection), selection, Arrays.toString(selectionArgs), sortOrder,
-                  notifyForDescendents);
-            }
             subscriber.onNext(query);
           }
         };
@@ -106,11 +121,12 @@ public final class BriteContentResolver {
     };
     Observable<Query> queryObservable = Observable.create(subscribe) //
         .startWith(query) //
+        .observeOn(scheduler) //
         .onBackpressureLatest();
     return new QueryObservable(queryObservable);
   }
 
-  private void log(String message, Object... args) {
+  void log(String message, Object... args) {
     if (args.length > 0) message = String.format(message, args);
     logger.log(message);
   }

@@ -1,8 +1,32 @@
 Change Log
 =========
 
-Version 0.5.0 *(In Development)*
---------------------------------
+Version 0.6.0 *(2016-02-17)*
+----------------------------
+
+ * New: Require a `Scheduler` when wrapping a database or content provider which will be used when
+   sending query triggers. This allows the query to be run in subsequent operators without needing an
+   additional `observeOn`. It also eliminates the need to use `subscribeOn` since the supplied
+   `Scheduler` will be used for all emissions (similar to RxJava's `timer`, `interval`, etc.).
+
+   This also corrects a potential violation of the RxJava contract and potential source of bugs in that
+   all triggers will occur on the supplied `Scheduler`. Previously the initial value would trigger
+   synchronously (on the subscribing thread) while subsequent ones trigger on the thread which
+   performed the transaction. The new behavior puts the initial trigger on the same thread as all
+   subsequent triggers and also does not force transactions to block while sending triggers.
+
+
+Version 0.5.1 *(2016-02-03)*
+----------------------------
+
+ * New: Query logs now contain timing information on how long they took to execute. This only covers
+   the time until a `Cursor` was made available, not object mapping or delivering to subscribers.
+ * Fix: Switch query logging to happen when `Query.run` is called, not when a query is triggered.
+ * Fix: Check for subscribing inside a transaction using a more accurate primitive.
+
+
+Version 0.5.0 *(2015-12-09)*
+----------------------------
 
  * New: Expose `mapToOne`, `mapToOneOrDefault`, and `mapToList` as static methods on `Query`. These
    mirror the behavior of the methods of the same name on `QueryObservable` but can be used later in

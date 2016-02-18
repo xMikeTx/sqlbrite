@@ -22,7 +22,6 @@ import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteException;
 import android.support.test.InstrumentationRegistry;
 import android.support.test.runner.AndroidJUnit4;
-import com.google.common.collect.Range;
 import com.squareup.sqlbrite.BriteDatabase.Transaction;
 import com.squareup.sqlbrite.TestDb.Employee;
 import java.io.Closeable;
@@ -31,7 +30,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -60,6 +58,7 @@ import static org.junit.Assert.fail;
 public final class BriteDatabaseTest {
   private final List<String> logs = new ArrayList<>();
   private final RecordingObserver o = new RecordingObserver();
+  private final TestScheduler scheduler = new TestScheduler();
 
   private TestDb helper;
   private SQLiteDatabase real;
@@ -74,7 +73,7 @@ public final class BriteDatabaseTest {
         logs.add(message);
       }
     };
-    db = new BriteDatabase(helper, logger);
+    db = new BriteDatabase(helper, logger, scheduler);
   }
 
   @After public void tearDown() {
@@ -93,7 +92,7 @@ public final class BriteDatabaseTest {
     assertThat(logs).isEmpty();
   }
 
-  @Test public void closePropagates() throws IOException {
+  @Test public void closePropagates() {
     db.close();
     assertThat(real.isOpen()).isFalse();
   }
@@ -164,42 +163,27 @@ public final class BriteDatabaseTest {
         .isExhausted();
   }
 
-  @Test public void queryObservesInsertDebounced() {
-    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES)
-        .debounce(500, MILLISECONDS)
-        .subscribe(o);
+  @Test public void queryInitialValueAndTriggerUsesScheduler() {
+    scheduler.runTasksImmediately(false);
+
+    db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES).subscribe(o);
+    o.assertNoMoreEvents();
+    scheduler.triggerActions();
     o.assertCursor()
         .hasRow("alice", "Alice Allison")
         .hasRow("bob", "Bob Bobberson")
         .hasRow("eve", "Eve Evenson")
         .isExhausted();
 
-    long startNs = System.nanoTime();
-
-    // Shotgun 10 inserts which will cause 10 triggers. DO NOT DO THIS IRL! Use a transaction!
-    for (int i = 0; i < 10; i++) {
-      db.insert(TABLE_EMPLOYEE, employee("john" + i, "John Johnson " + i));
-    }
-
-    // Only one trigger should have been observed.
+    db.insert(TABLE_EMPLOYEE, employee("john", "John Johnson"));
+    o.assertNoMoreEvents();
+    scheduler.triggerActions();
     o.assertCursor()
         .hasRow("alice", "Alice Allison")
         .hasRow("bob", "Bob Bobberson")
         .hasRow("eve", "Eve Evenson")
-        .hasRow("john0", "John Johnson 0")
-        .hasRow("john1", "John Johnson 1")
-        .hasRow("john2", "John Johnson 2")
-        .hasRow("john3", "John Johnson 3")
-        .hasRow("john4", "John Johnson 4")
-        .hasRow("john5", "John Johnson 5")
-        .hasRow("john6", "John Johnson 6")
-        .hasRow("john7", "John Johnson 7")
-        .hasRow("john8", "John Johnson 8")
-        .hasRow("john9", "John Johnson 9")
+        .hasRow("john", "John Johnson")
         .isExhausted();
-
-    long tookNs = System.nanoTime() - startNs;
-    assertThat(TimeUnit.NANOSECONDS.toMillis(tookNs)).isIn(Range.atLeast(500L));
   }
 
   @Test public void queryNotNotifiedWhenInsertFails() {
@@ -539,6 +523,16 @@ public final class BriteDatabaseTest {
   }
 
   @Test public void querySubscribedToDuringTransactionThrows() {
+    Observable<Query> query = db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES);
+
+    db.newTransaction();
+    query.subscribe(o);
+    o.assertErrorContains("Cannot subscribe to observable query in a transaction.");
+  }
+
+  @Test public void querySubscribedToDuringTransactionThrowsWithBackpressure() {
+    o.doRequest(0);
+
     Observable<Query> query = db.createQuery(TABLE_EMPLOYEE, SELECT_EMPLOYEES);
 
     db.newTransaction();
